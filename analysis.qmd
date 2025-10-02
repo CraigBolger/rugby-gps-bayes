@@ -1,0 +1,2060 @@
+---
+title: "analysis"
+format: html
+editor: visual
+---
+
+## Import data
+
+```{r}
+#| label: Load and read in cleaned data
+
+# ------------------------------------------------------------------
+#load in packages
+# ------------------------------------------------------------------
+library(ggplot2)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(broom)
+library(brms)
+library(splines)
+library(rms)
+library(hms)
+library(dplyr)
+library(bayestestR)
+library(shiny)
+library(performance)
+library(bayesplot)
+library(e1071)
+library(GGally)
+library(caret)
+library(forcats)
+library(tidybayes)
+
+# ------------------------------------------------------------------
+#Read in GPS data
+# ------------------------------------------------------------------
+gps_matchplay <- read_csv("synthetic-data/gps_matchplay_exp.csv")
+gps_matchplay_bip <- read_csv("synthetic-data/gps_matchplay_bip_exp.csv")
+
+```
+
+```{r}
+#| label: Mutate and select Variables of interest
+
+# ------------------------------------------------------------------
+# Mutate and select variables of interest
+# ------------------------------------------------------------------
+gps_matchplay_1 <- gps_matchplay |> 
+  filter(period_name == "Match Total") |> 
+  mutate(
+    duration_secs = as.numeric(total_duration),
+    duration_mins = duration_secs / 60,
+    team_id = as.factor(team_id),
+    position_5 = as.factor(position_5),
+    contacts = (tackle + ball_carry + attacker + collision),
+    scrum_maul = (total_scrums + maul)
+  ) |> 
+  select(id,
+         period_name,
+         period_tags, 
+         fixture_id,
+         rd,
+         turnaround,
+         team_id,
+         position_5,
+         duration_mins,
+         total_distance, 
+         hsr_distance_5m_s,
+         hmld_gen_2,
+         total_acceleration_load,
+         accelerations_total_number,
+         tackle,
+         ball_carry,
+         attacker,
+         collision,
+         contacts,
+         total_breakdowns,
+         maul,
+         total_scrums,
+         scrum_maul)
+
+# ------------------------------------------------------------------
+# positional descriptive stats
+# ------------------------------------------------------------------
+
+gps_matchplay_1 %>%
+  count(position_5)
+
+gps_matchplay_1 %>%
+  group_by(position_5, fixture_id) %>%     
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(position_5) %>%
+  summarise(
+    mean_per_game = mean(n),
+    sd_per_game   = sd(n)
+  )
+
+pos_order <- c("Front Row","Locks","Back Row","Inside Backs","Outside Backs")
+bin_order <- c("0-15", "16-30", "31-45", "46-60", "61-90", "91-120", "121-150", "151-180", "180+")
+
+```
+
+```{r}
+#| label: Exploratory analysis
+
+# ------------------------------
+# Define continuous response variables
+# ------------------------------
+response_vars <- c("total_distance", "hmld_gen_2", "hsr_distance_5m_s", "total_acceleration_load")
+
+# ------------------------------
+# Distributions
+# ------------------------------
+plot_hist_density <- function(y) {
+  ggplot(gps_matchplay_1, aes(x = .data[[y]], y = ..density..)) +
+    geom_histogram(colour = "dodgerblue", fill = "dodgerblue", alpha = 0.8, bins = 30) +
+    geom_density(fill = "black", alpha = 0.3) +
+    geom_vline(xintercept = mean(gps_matchplay_1[[y]], na.rm = TRUE), linetype = "dashed", colour = "magenta") +
+    labs(title = paste("Distribution:", y), x = y, y = "Density") +
+    theme_minimal(base_size = 12)
+}
+for (y in response_vars) {
+  print(plot_hist_density(y))
+  cat("\nSkewness for", y, "=", round(e1071::skewness(gps_matchplay_1[[y]], na.rm = TRUE), 3), "\n")
+}
+
+# ------------------------------
+# Boxplots: position
+# ------------------------------
+gg_boxplot <- function(feature, y) {
+  ggplot(
+    gps_matchplay_1,
+    aes(
+      x = reorder(.data[[feature]], .data[[y]], FUN = median, na.rm = TRUE),
+      y = .data[[y]],
+      fill = reorder(.data[[feature]], .data[[y]], FUN = median, na.rm = TRUE)
+    )
+  ) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(title = paste("Boxplot:", feature, "vs", y), x = feature, y = y) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+}
+for (y in response_vars) {
+  print(gg_boxplot("position_5", y))
+}
+
+# ------------------------------
+# Boxplots: turnaround
+# ------------------------------
+for (y in response_vars) {
+  p <- gps_matchplay_1 %>%
+    dplyr::filter(!is.na(turnaround), !is.na(.data[[y]])) %>%
+    ggplot2::ggplot(ggplot2::aes(x = turnaround, y = .data[[y]], fill = turnaround)) +
+    ggplot2::geom_boxplot(outlier.alpha = 0.25) +
+    ggplot2::labs(
+      title = paste("Boxplots of", y, "by turnaround"),
+      x = "Turnaround",
+      y = y
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(legend.position = "none",
+                   axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+  print(p)
+}
+
+
+# ------------------------------
+# Boxplots: team_id
+# ------------------------------
+for (y in response_vars) {
+  p <- ggplot(
+    gps_matchplay_1 %>% filter(!is.na(team_id), !is.na(.data[[y]])),
+    aes(x = reorder(team_id, .data[[y]], FUN = median, na.rm = TRUE),
+        y = .data[[y]],
+        fill = team_id)
+  ) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(title = paste("Outcome by team_id:", y), x = "Team ID", y = y) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+  print(p)
+}
+
+
+# ------------------------------
+# Scatterplots: duration_mins
+# ------------------------------
+gg_scatter <- function(x, y) {
+  ggplot(gps_matchplay_1, aes(x = .data[[x]], y = .data[[y]])) +
+    geom_point(colour = "dodgerblue", alpha = 0.5) +
+    geom_smooth(method = "lm", colour = "magenta", se = FALSE) +
+    geom_smooth(colour = "purple", se = FALSE) +
+    labs(title = paste("Scatter:", y, "~", x), x = x, y = y) +
+    theme_minimal(base_size = 12)
+}
+for (y in response_vars) {
+  print(gg_scatter("duration_mins", y))
+}
+
+
+# ------------------------------
+# Define count response variables
+# ------------------------------
+count_vars <- c("accelerations_total_number", "contacts", "total_breakdowns", "scrum_maul")
+
+# ------------------------------
+# Distributions
+# ------------------------------
+plot_hist_count <- function(y) {
+  ggplot(gps_matchplay_1, aes(x = .data[[y]])) +
+    geom_histogram(bins = 30, colour = "dodgerblue", fill = "dodgerblue", alpha = 0.8) +
+    labs(title = paste("Distribution (count):", y), x = y, y = "Frequency") +
+    theme_minimal(base_size = 12)
+}
+for (y in count_vars) {
+  print(plot_hist_count(y))
+  cat("\nSkewness for", y, "=", round(e1071::skewness(gps_matchplay_1[[y]], na.rm = TRUE), 3),
+      " | Zero proportion =", round(mean(gps_matchplay_1[[y]] == 0, na.rm = TRUE), 3), "\n")
+}
+
+# ------------------------------
+# Boxplots: position_5
+# ------------------------------
+gg_boxplot_count <- function(y) {
+  ggplot(
+    gps_matchplay_1,
+    aes(
+      x = reorder(position_5, .data[[y]], FUN = median, na.rm = TRUE),
+      y = .data[[y]],
+      fill = reorder(position_5, .data[[y]], FUN = median, na.rm = TRUE)
+    )
+  ) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(title = paste("Boxplot: position_5 vs", y), x = "position_5", y = y) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+}
+for (y in count_vars) print(gg_boxplot_count(y))
+
+
+# ------------------------------
+# Boxplots: turnaround
+# ------------------------------
+for (y in count_vars) {
+  p <- gps_matchplay_1 %>%
+    filter(!is.na(turnaround), !is.na(.data[[y]])) %>%
+    ggplot(aes(x = turnaround, y = .data[[y]], fill = turnaround)) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(
+      title = paste("Boxplots of", y, "by turnaround"),
+      x = "Turnaround", y = y
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1))
+  print(p)
+}
+
+# ------------------------------
+# Boxplots: team_id
+# ------------------------------
+for (y in count_vars) {
+  p <- ggplot(
+    gps_matchplay_1 %>% filter(!is.na(team_id), !is.na(.data[[y]])),
+    aes(x = reorder(team_id, .data[[y]], FUN = median, na.rm = TRUE),
+        y = .data[[y]], fill = team_id)
+  ) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(title = paste("Count outcome by team_id:", y), x = "Team ID", y = y) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+  print(p)
+}
+
+# ------------------------------
+# Scatterplots: duration_mins
+# ------------------------------
+gg_scatter_count <- function(y) {
+  ggplot(gps_matchplay_1, aes(x = duration_mins, y = .data[[y]])) +
+    geom_jitter(width = 0.25, height = 0, alpha = 0.5, colour = "dodgerblue", size = 1) +
+    stat_smooth(method = "glm",
+                method.args = list(family = poisson(link = "log")),
+                se = FALSE, colour = "magenta") +
+    labs(title = paste("Scatter (count):", y, "~ duration_mins"),
+         x = "Minutes on field", y = y) +
+    theme_minimal(base_size = 12)
+}
+for (y in count_vars) print(gg_scatter_count(y))
+
+```
+
+## GPS Models
+
+### GPS distance-based metrics
+
+```{r}
+#| label: Models
+
+# model_running_00 <- brm(
+#   bf(
+#     mvbind(total_distance, hmld_gen_2, hsr_distance_5m_s, total_acceleration_load) ~
+#      duration_mins + position_5 + (1 | id)
+#   ),
+#   data = gps_matchplay_1,
+#   family = gaussian(),
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control =  list(
+#     adapt_delta = 0.999,
+#     max_treedepth = 15
+#   )
+#   )
+#   
+#   
+# pp_check(model_running_00, resp = "totaldistance")
+# pp_check(model_running_00, resp = "hsrdistance5ms")
+# pp_check(model_running_00, resp = "hmldgen2")
+# pp_check(model_running_00, resp = "totalaccelerationload")
+
+
+# td_00 <- bf(total_distance ~ duration_mins * position_5 + (1 + duration_mins | id) + (1 | fixture_id),
+#             family = gaussian ())
+# hmld_00 <- bf(hmld_gen_2 ~ duration_mins * position_5 + (1 + duration_mins | id) + (1 | fixture_id),
+#             family = gaussian ())
+# hsr_00 <- bf(hsr_distance_5m_s ~ duration_mins * position_5 + (1 + duration_mins | id) + (1 | fixture_id),
+#              family = gaussian ())
+# al_00 <- bf(total_acceleration_load ~ duration_mins * position_5 + (1 + duration_mins | id) + (1 | fixture_id),
+#             family = gaussian ())
+#    
+# model_running_01 <- brm(
+#   td_00 + hmld_00 + hsr_00 + al_00,
+#   data = gps_matchplay_1,
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   save_pars = save_pars(all = TRUE)
+# )
+
+
+# td_01 <- bf(total_distance ~ duration_mins * position_5 + turnaround + team_id + (1 + duration_mins |ID1| id) + (1 | fixture_id),
+#          family = gaussian ())
+# hmld_01 <- bf(hmld_gen_2 ~ duration_mins * position_5 + turnaround + team_id + (1 + duration_mins |ID2| id) + (1 | fixture_id),
+#          family = gaussian ())
+# hsr_01 <- bf(hsr_distance_5m_s ~ duration_mins * position_5 + turnaround + team_id + (1 + duration_mins |ID2| id) + (1 | fixture_id) ,
+#          family = gaussian ())
+# al_01 <- bf(total_acceleration_load ~ duration_mins * position_5 + turnaround + team_id + (1 + duration_mins |ID1| id) + (1 | fixture_id),
+#          family = gaussian ())
+
+
+# model_running_04 <- brm(
+#   td_01 + hmld_01 + hsr_01 + al_01,
+#   data = gps_matchplay_1,
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control = list(
+#      adapt_delta = 0.999,
+#       max_treedepth = 15),
+#   save_pars = save_pars(all = TRUE)
+# )
+
+#mvbind
+# saveRDS(model_running_00, file = "models/model_running_00.rds")
+model_running_00 <- read_rds("models/model_running_00.rds")
+# summary(model_running_00)
+# conditional_effects(model_running_00)
+# bayes_R2(model_running_00)
+
+# no corrlation (ID)
+# saveRDS(model_running_01, file = "models/model_running_01.rds")
+model_running_01 <- read_rds("models/model_running_01.rds")
+# summary(model_running_01)
+# conditional_effects(model_running_01)
+# bayes_R2(model_running_01)
+  
+  
+# corrlation (ID) + turnaround
+# saveRDS(model_running_02, file = "models/model_running_02.rds")
+model_running_02 <- read_rds("models/model_running_02.rds")
+# summary(model_running_02)
+# conditional_effects(model_running_02)
+# bayes_R2(model_running_02)
+
+# corrlation (ID) + turnaround + id slope
+# saveRDS(model_running_03, file = "models/model_running_03.rds")
+model_running_03 <- read_rds("models/model_running_03.rds")
+# summary(model_running_03)
+# conditional_effects(model_running_03)
+# bayes_R2(model_running_03)
+
+
+# corrlation (ID) + turnaround + id slope + team_id
+# saveRDS(model_running_04, file = "models/model_running_04.rds")
+model_running_04 <- read_rds("models/model_running_04.rds")
+# summary(model_running_04)
+# conditional_effects(model_running_04)
+# bayes_R2(model_running_04)
+
+
+```
+
+```{r}
+#| label: Model comparison
+
+# loo_run_0 <- loo(model_running_00)
+# loo_run_1 <- loo(model_running_01)
+# loo_run_2 <- loo(model_running_02)
+# loo_run_3 <- loo(model_running_03)
+# loo_run_4 <- loo(model_running_04)
+# 
+# 
+# loo_compare(loo_run_0,loo_run_1, loo_run_2, loo_run_3, loo_run_4)
+# 
+# 
+# bayes_R2(model_running_00)
+# bayes_R2(model_running_01)
+# bayes_R2(model_running_02)
+# bayes_R2(model_running_03)
+# bayes_R2(model_running_04)
+# 
+# 
+# summary(model_running_03)
+
+ 
+# pp_check(model_running_03, resp = "totaldistance")
+# pp_check(model_running_03, resp = "hsrdistance5ms")
+# pp_check(model_running_03, resp = "hmldgen2")
+# pp_check(model_running_03, resp = "totalaccelerationload")
+
+
+```
+
+```{r}
+#| label: Model performance: obs vs pred 
+
+fitted_td <- fitted(model_running_03, resp = "totaldistance", re.form = NA)[, "Estimate"]
+fitted_hsr <- fitted(model_running_03, resp = "hsrdistance5ms", re.form = NA)[, "Estimate"]
+fitted_hmld <- fitted(model_running_03, resp = "hmldgen2", re.form = NA)[, "Estimate"]
+fitted_accelload <- fitted(model_running_03, resp = "totalaccelerationload", re.form = NA)[, "Estimate"]
+
+
+gps_matchplay_1$predicted_total_distance <- pmax(fitted_td, 0)
+gps_matchplay_1$predicted_hsr <- pmax(fitted_hsr, 0)
+gps_matchplay_1$predicted_hmld <- pmax(fitted_hmld, 0)
+gps_matchplay_1$predicted_accelload <- pmax(fitted_accelload, 0)
+
+
+# Compute R-squared using squared Pearson correlation
+r_s_td <- cor(gps_matchplay_1$total_distance, gps_matchplay_1$predicted_total_distance, use = "complete.obs")^2
+r_s_hsr <- cor(gps_matchplay_1$hsr_distance_5m_s, gps_matchplay_1$predicted_hsr, use = "complete.obs")^2
+r_s_hmld <- cor(gps_matchplay_1$hmld_gen_2, gps_matchplay_1$predicted_hmld, use = "complete.obs")^2
+r_s_accelload <- cor(gps_matchplay_1$total_acceleration_load, gps_matchplay_1$predicted_accelload, use = "complete.obs")^2
+
+
+print(r_s_td)
+print(r_s_hsr)
+print(r_s_hmld)
+print(r_s_accelload)
+
+RMSE(pred = gps_matchplay_1$predicted_total_distance,
+   obs = gps_matchplay_1$total_distance)
+
+RMSE(pred = gps_matchplay_1$predicted_hsr,
+   obs = gps_matchplay_1$hsr_distance_5m_s)
+
+RMSE(pred = gps_matchplay_1$predicted_hmld,
+   obs = gps_matchplay_1$hmld_gen_2)
+
+RMSE(pred = gps_matchplay_1$predicted_accelload,
+   obs = gps_matchplay_1$total_acceleration_load)
+
+
+ggplot(gps_matchplay_1, aes(x = total_distance, y = predicted_total_distance)) +
+  geom_point() + 
+  geom_smooth()
+ggplot(gps_matchplay_1, aes(x = hsr_distance_5m_s, y = predicted_hsr)) +
+  geom_point() + 
+  geom_smooth()
+ggplot(gps_matchplay_1, aes(x = hmld_gen_2, y = predicted_hmld)) +
+  geom_point() + 
+  geom_smooth()
+ggplot(gps_matchplay_1, aes(x = total_acceleration_load, y = predicted_accelload)) +
+  geom_point() + 
+  geom_smooth()
+
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_total_distance, y = total_distance - predicted_total_distance)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_hsr, y =  hsr_distance_5m_s - predicted_hsr))+
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_hmld, y = hmld_gen_2 - predicted_hmld)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_accelload, y = total_acceleration_load - predicted_accelload)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+
+```
+
+```{r}
+#| label: Exported graphs
+
+# ------------------------------------------------------------------
+# Prediceted vs Observed Outputs
+# ------------------------------------------------------------------
+td_pvo <- ggplot(
+  gps_matchplay_1, aes(x = total_distance, y = predicted_total_distance)) +
+  geom_point(aes(colour = position_5),alpha = 0.6, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Total Distance",
+    x = "Observed Total Distance (m)",
+    y = "Predicted Total Distance (m)") +
+  theme_bw(base_size = 14)
+
+
+accelload_pvo <- ggplot(
+  gps_matchplay_1, aes(x = total_acceleration_load, y = predicted_accelload)) +
+  geom_point(aes(colour = position_5),alpha = 0.6, size = 2) +
+    geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Acceleration Load",
+    x = "Observed Acceleration Load (AU)",
+    y = "Predicted Acceleration Load (AU)"
+  ) +
+  theme_bw(base_size = 14)
+
+
+hsr_pvo <- ggplot(
+  gps_matchplay_1, aes(x = hsr_distance_5m_s, y = predicted_hsr)) +
+  geom_point(aes(colour = position_5),alpha = 0.6, size = 2) +
+    geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed High-Speed Running",
+    x = "Observed HSR (m)",
+    y = "Predicted HSR (m)"
+  ) +
+  theme_bw(base_size = 14)
+
+
+hmld_pvo <- ggplot(
+  gps_matchplay_1, aes(x = hmld_gen_2, y = predicted_hmld)) +
+  geom_point(aes(colour = position_5),alpha = 0.6, size = 2) +
+   geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed HMLD",
+    x = "Observed HMLD (m)",
+    y = "Predicted HMLD (m)"
+  ) +
+  theme_bw(base_size = 14)
+
+# ------------------------------------------------------------------
+# Combine all 4 plots into a 2x2 grid
+# ------------------------------------------------------------------
+
+combined_pvo <- ggpubr::ggarrange(td_pvo, accelload_pvo, hsr_pvo, hmld_pvo,
+                   common.legend = TRUE,
+                   legend = "right",
+                    ncol = 2, nrow = 2,
+                   align = "hv")
+# ------------------------------------------------------------------
+# Save as one figure
+# ------------------------------------------------------------------
+
+ggsave(
+  "figs/predicted_vs_observed_continous_combined.tiff",
+  plot = combined_pvo,
+  width = 14, height = 10, units = "in",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+### GPS count-based metrics
+
+```{r}
+#| label: Models
+ 
+# model_accels_00 <- brm(
+#   accelerations_total_number ~ duration_mins * position_5 + (1 | id) + (1 | fixture_id) ,
+#   data    = gps_matchplay_1,
+#   family  = negbinomial (),
+#   seed    = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000
+# )
+
+#  model_accels_01 <- brm(
+#   accelerations_total_number ~ duration_mins * position_5 + turnaround + (1 | id) + (1 | fixture_id) ,
+#   data    = gps_matchplay_1,
+#   family  = zero_inflated_negbinomial (),
+#   seed    = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000
+# )
+
+ 
+# model_accels_02 <- brm(
+#   accelerations_total_number ~ ns(duration_mins, df = 3) * position_5 + turnaround + (1 | id) + (1 | fixture_id) ,
+#   data    = gps_matchplay_1,
+#   family  = zero_inflated_negbinomial (),
+#   seed    = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000
+#  )
+
+# model_accels_03 <- brm(
+#   accelerations_total_number ~ ns(duration_mins, df = 3) * position_5 + turnaround + (1 + duration_mins | id) + (1 | fixture_id) ,
+#   data    = gps_matchplay_1,
+#   family  = zero_inflated_negbinomial (),
+#   seed    = 1,
+#   chains = 4,
+#   iter = 4000,
+#  warmup = 1000, 
+#   control =  list(
+#      adapt_delta = 0.999,
+#     max_treedepth = 15)
+# )
+
+
+# saveRDS(model_accels_00, file = "models/model_accels_00.rds")
+model_accels_00 <- read_rds("models/model_accels_00.rds")
+# summary(model_accels_00)
+# conditional_effects(model_accels_00)
+# bayes_factor(model_accels_00)
+
+
+  
+# saveRDS(model_accels_01, file = "models/model_accels_01.rds")
+model_accels_01 <- read_rds("models/model_accels_01.rds")
+# summary(model_accels_01)
+# conditional_effects(model_accels_01)
+# bayes_factor(model_accels_01)
+
+
+# saveRDS(model_accels_02, file = "models/model_accels_02.rds")
+model_accels_02 <- read_rds("models/model_accels_02.rds")
+# summary(model_accels_02)
+# conditional_effects(model_accels_02)
+# bayes_factor(model_accels_02)
+ 
+
+# saveRDS(model_accels_03, file = "models/model_accels_03.rds")
+model_accels_03 <- read_rds("models/model_accels_03.rds")
+# summary(model_accels_03)
+# conditional_effects(model_accels_03)
+# bayes_factor(model_accels_03)
+
+
+ 
+
+```
+
+```{r}
+#| label: Model comparison
+# 
+# loo_accels_0 <- loo(model_accels_00)
+# loo_accels_1 <- loo(model_accels_01)
+# loo_accels_2 <- loo(model_accels_02)
+# loo_accels_3 <- loo(model_accels_03)
+# 
+# 
+# loo_compare(loo_accels_0, loo_accels_1, loo_accels_2, loo_accels_3)
+# 
+# 
+# bayes_R2(model_accels_00)
+# bayes_R2(model_accels_01)
+# bayes_R2(model_accels_02)
+# bayes_R2(model_accels_03)
+# 
+# pp_check(model_accels_00)
+# pp_check(model_accels_01)
+# pp_check(model_accels_02)
+# pp_check(model_accels_03)
+# 
+# 
+# summary(model_accels_02)
+
+```
+
+```{r}
+#| label: Model performance obs vs pred
+
+
+fitted_accels <- fitted(model_accels_02, re.form = NA)[, "Estimate"] 
+
+gps_matchplay_1$predicted_accels <- pmax(fitted_accels, 0)
+
+
+# Compute R-squared using squared Pearson correlation
+r_s_accel <- cor(gps_matchplay_1$accelerations_total_number, gps_matchplay_1$predicted_accels, use = "complete.obs")^2
+
+
+RMSE(pred = gps_matchplay_1$predicted_accels,
+   obs = gps_matchplay_1$accelerations_total_number)
+
+
+ggplot(gps_matchplay_1, aes(x = accelerations_total_number, y = predicted_accels)) +
+  geom_point() + 
+  geom_smooth()
+
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_accels, y = accelerations_total_number - predicted_accels)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+```
+
+```{r}
+#| label: Exported graphs
+
+# ------------------------------------------------------------------
+# Prediceted vs Observed Outputs
+# ------------------------------------------------------------------
+accel_pvo <- ggplot(
+  gps_matchplay_1, aes(x = accelerations_total_number, y = predicted_accels)) +
+  geom_point(aes(colour = position_5),alpha = 0.6, size = 2) +
+ geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Accel Count",
+    x = "Observed Accel count",
+    y = "Predicted Accel count") +
+ theme_bw(base_size = 14)
+```
+
+### GPS Emmeans Prediction
+
+```{r}
+#| label: Total Distance
+
+
+emm_td <- emmeans(
+ model_running_03, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "totaldistance", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)
+  )
+) |> 
+  as_tibble() |> 
+  mutate(
+    emmean = pmax(emmean, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    TD_emmean     = emmean,
+    TD_lower_HPD  = lower.HPD,
+    TD_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+emm_td_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_td,
+    aes(x = duration_mins, ymin = TD_lower_HPD, ymax = TD_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_td,
+    aes(x = duration_mins, y = TD_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = total_distance, colour = position_5)
+  ) + 
+  
+  facet_wrap(~ position_5) +
+  labs(
+    title = "Estimated Total Distance by Match Duration and Position",
+    x = "Duration (min)",
+    y = "Total Distance (m)",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()
+
+# Save plot
+ggsave("figs/total_distance_by_duration_position.png", plot = emm_td_plot, width = 10, height = 6, dpi = 300)
+
+
+```
+
+```{r}
+#| label: Acceleration Load
+emm_accelload <- emmeans(
+ model_running_03, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "totalaccelerationload", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)
+  )
+) |> 
+  as_tibble() |> 
+  mutate(
+    emmean = pmax(emmean, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    AL_emmean     = emmean,
+    AL_lower_HPD  = lower.HPD,
+    AL_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+emm_al_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_accelload,
+    aes(x = duration_mins, ymin = AL_lower_HPD, ymax = AL_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_accelload,
+    aes(x = duration_mins, y = AL_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = total_acceleration_load, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) + 
+  labs(
+    title = "Estimated Acceleration Load by Match Duration and Position",
+    x = "Duration (min)",
+    y = "Total Acceleration Load",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/acceleration_load_by_duration_position.png", plot = emm_al_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: HSR
+emm_hsr <- emmeans(
+  model_running_03, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "hsrdistance5ms", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)
+  )
+) |> 
+  as_tibble() |> 
+  mutate(
+    emmean = pmax(emmean, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    HSR_emmean     = emmean,
+    HSR_lower_HPD  = lower.HPD,
+    HSR_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+
+emm_hsr_plot <- ggplot() +
+  geom_ribbon(
+    data = emm_hsr,
+    aes(x = duration_mins, ymin = HSR_lower_HPD, ymax = HSR_upper_HPD, fill = position_5),
+    alpha = 0.2
+  ) +
+  geom_line(
+    data = emm_hsr,
+    aes(x = duration_mins, y = HSR_emmean, colour = position_5)
+  ) +
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = hsr_distance_5m_s, colour = position_5)
+  ) + 
+  facet_wrap(~ position_5) +
+  labs(
+    title = "Estimated HSR by Match Duration and Position",
+    x = "Duration (min)",
+    y = "HSR",
+    fill = "Position",
+    colour = "Position"
+  ) + 
+  theme_bw()
+
+
+ggsave("figs/hsr_by_duration_position.png", plot = emm_hsr_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: HMLD
+emm_hmld <- emmeans(
+ model_running_03, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "hmldgen2", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)
+  )
+) |> 
+  as_tibble() |> 
+  mutate(
+    emmean = pmax(emmean, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    HMLD_emmean     = emmean,
+    HMLD_lower_HPD  = lower.HPD,
+    HMLD_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+emm_hmld_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_hmld,
+    aes(x = duration_mins, ymin = HMLD_lower_HPD, ymax = HMLD_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_hmld,
+    aes(x = duration_mins, y = HMLD_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = hmld_gen_2, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) + 
+  labs(
+  title = "Estimated HMLD by Match Duration and Position",
+    x = "Duration (min)",
+    y = "HMLD",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/hmld_by_duration_position.png", plot = emm_hmld_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: Acceleration Count
+
+emm_accels <- emmeans(
+  model_accels_02,
+  specs = ~ duration_mins * position_5,
+  re.form = NA,
+  at = list(duration_mins = seq(10, 90, by = 10)),
+  type = "response"
+) |>
+  as_tibble() |> 
+  mutate(
+    prob = pmax(prob, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    Accels_emmean     = prob,
+    Accels_lower_HPD  = lower.HPD,
+    Accels_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+ emm_accel_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_accels,
+    aes(x = duration_mins, ymin = Accels_lower_HPD, ymax = Accels_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_accels,
+    aes(x = duration_mins, y = Accels_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = accelerations_total_number, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) +
+  
+  labs(
+  title = "Estimated Acceleration Count by Match Duration and Position",
+    x = "Duration (min)",
+    y = "Accels",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/accels_by_duration_position.png", plot = emm_accel_plot, width = 10, height = 6, dpi = 300)
+
+```
+
+## Contact
+
+### Models
+
+```{r}
+#| label: Models
+
+# model_contacts_00 <- brm(
+#   bf(
+#     mvbind (ball_carry, tackle, attacker, total_breakdowns, scrum_maul) ~
+#    duration_mins * position_5 + (1 | id)
+#   ),
+#   data = gps_matchplay_1,
+#   family = zero_inflated_negbinomial(),
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000
+#   )
+
+# pp_check(model_contacts_00, resp =  "ball_carry")
+# pp_check(model_contacts_00, resp =  "tackle")
+# pp_check(model_contacts_00, resp =  "attacker")
+# pp_check(model_contacts_00, resp =  "totalbreakdowns")
+# pp_check(model_contacts_00, resp =  "scrummaul")
+ 
+
+# model_contacts_01 <- brm(
+#   bf(
+#     mvbind(contacts, total_breakdowns, scrum_maul) ~
+#      duration_mins * position_5 + (1 | id) + (1 | fixture_id)
+#   ),
+#   data = gps_matchplay_1,
+#   family = negbinomial(),
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control = list(adapt_delta = 0.99, max_treedepth = 15)
+#   )
+
+
+# m_contacts <- bf(
+#   contacts ~ duration_mins * position_5 + turnaround + (1 + duration_mins | id) + (1 | fixture_id),
+#   family = negbinomial()
+# )
+# m_breakdowns <- bf(
+#   total_breakdowns ~ duration_mins * position_5 + turnaround + (1 + duration_mins | id) + (1 | fixture_id),
+#   family = negbinomial()
+# )
+# m_scrum_maul <- bf(
+#   scrum_maul ~ duration_mins * position_5 + (1 + duration_mins | id) + (1 | fixture_id),
+#   family = zero_inflated_negbinomial()
+# )
+
+# model_contacts_03 <- brm(
+#   m_contacts + m_breakdowns + m_scrum_maul + set_rescor(FALSE),
+#   data = gps_matchplay_1,
+#    seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control = list(adapt_delta = 0.99,
+#                  max_treedepth = 15)
+# )
+
+
+# saveRDS(model_contacts_00, file = "models/model_contacts_00.rds")
+# model_contacts_00 <- read_rds("models/model_contacts_00.rds")
+# summary(model_contacts_00)
+# conditional_effects(model_contacts_00)
+# bayes_R2(model_contacts_00)
+
+# saveRDS(model_contacts_01, file = "models/model_contacts_01.rds")
+model_contacts_01 <- read_rds("models/model_contacts_01.rds")
+# summary(model_contacts_01)
+# conditional_effects(model_contacts_01)
+# bayes_R2(model_contacts_01)
+
+# saveRDS(model_contacts_02, file = "models/model_contacts_02.rds")
+model_contacts_02 <- read_rds("models/model_contacts_02.rds")
+# summary(model_contacts_02)
+# conditional_effects(model_contacts_02)
+# bayes_R2(model_contacts_02)
+
+# saveRDS(model_contacts_03, file = "models/model_contacts_03.rds")
+model_contacts_03 <- read_rds("models/model_contacts_03.rds")
+# summary(model_contacts_03)
+# conditional_effects(model_contacts_03)
+# bayes_R2(model_contacts_03)
+
+
+```
+
+```{r}
+#| label: Model comparison
+
+
+# loo_contacts_1 <- loo(model_contacts_01)
+# loo_contacts_2 <- loo(model_contacts_02)
+# loo_contacts_3 <- loo(model_contacts_03)
+# 
+# 
+# loo_compare(loo_contacts_1, loo_contacts_2, loo_contacts_3)
+# 
+# bayes_R2(model_contacts_01)
+# bayes_R2(model_contacts_02)
+# bayes_R2(model_contacts_03)
+# 
+# summary(model_contacts_01)
+# summary(model_contacts_02)
+# summary(model_contacts_03)
+# 
+# 
+# pp_check(model_contacts_02, resp = "contacts")
+# pp_check(model_contacts_02, resp = "totalbreakdowns")
+# pp_check(model_contacts_02, resp = "scrummaul")
+
+```
+
+```{r}
+#| label: Model performance obs vs pred
+fitted_contacts <- fitted(model_contacts_02, resp = "contacts", re.form = NA)[, "Estimate"]
+fitted_breakdowns <- fitted(model_contacts_02, resp = "totalbreakdowns", re.form = NA)[, "Estimate"]
+fitted_scrummaul <- fitted(model_contacts_02, resp = "scrummaul", re.form = NA)[, "Estimate"]
+
+gps_matchplay_1$predicted_contacts <- pmax(fitted_contacts, 0)
+gps_matchplay_1$predicted_total_breakdowns <- pmax(fitted_breakdowns, 0)
+gps_matchplay_1$predicted_scrum_maul <- pmax(fitted_scrummaul, 0)
+
+
+# Compute R-squared using squared Pearson correlation
+r_s_contacts <- cor(gps_matchplay_1$contacts, gps_matchplay_1$predicted_contacts, use = "complete.obs")^2
+r_s_breakdowns <- cor(gps_matchplay_1$total_breakdowns, gps_matchplay_1$predicted_total_breakdowns, use = "complete.obs")^2
+r_s_scrummaul <- cor(gps_matchplay_1$scrum_maul, gps_matchplay_1$predicted_scrum_maul, use = "complete.obs")^2
+
+
+RMSE(pred = gps_matchplay_1$predicted_contacts,
+   obs = gps_matchplay_1$contacts)
+
+RMSE(pred = gps_matchplay_1$predicted_total_breakdowns,
+   obs = gps_matchplay_1$total_breakdowns)
+
+RMSE(pred = gps_matchplay_1$predicted_scrum_maul,
+   obs = gps_matchplay_1$scrum_maul)
+
+
+ggplot(gps_matchplay_1, aes(x = contacts, y = predicted_contacts)) +
+  geom_point() + 
+  geom_smooth()
+
+ggplot(gps_matchplay_1, aes(x = total_breakdowns, y = predicted_total_breakdowns)) +
+  geom_point() + 
+  geom_smooth()
+
+ggplot(gps_matchplay_1, aes(x = scrum_maul, y = predicted_scrum_maul)) +
+  geom_point() + 
+  geom_smooth()
+
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_contacts, y = contacts - predicted_contacts)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_scrum_maul, y = scrum_maul - predicted_scrum_maul)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+
+ggplot(data = gps_matchplay_1, aes(x = predicted_total_breakdowns, y = total_breakdowns - predicted_total_breakdowns)) + 
+  geom_point(colour = "navy") + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed")
+```
+
+```{r}
+#| label: Exported graphs
+
+# ------------------------------------------------------------------
+# Prediceted vs Observed Outputs
+# ------------------------------------------------------------------
+contacts_pvo <- ggplot(
+  gps_matchplay_1, aes(x = contacts, y = predicted_contacts)
+) +
+  geom_point(aes(colour = position_5), alpha = 0.6, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Contact Events",
+    x = "Observed Contacts",
+    y = "Predicted Contacts"
+  ) +
+  theme_bw(base_size = 14)
+
+
+breakdown_pvo <- ggplot(
+  gps_matchplay_1, aes(x = total_breakdowns, y = predicted_total_breakdowns)
+) +
+  geom_point(aes(colour = position_5), alpha = 0.6, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Total Breakdowns",
+    x = "Observed Total Breakdowns",
+    y = "Predicted Total Breakdowns"
+  ) +
+  theme_bw(base_size = 14)
+
+
+scrummaul_pvo <- ggplot(
+  gps_matchplay_1, aes(x = scrum_maul, y = predicted_scrum_maul)
+) +
+  geom_point(aes(colour = position_5), alpha = 0.6, size = 2) +
+ geom_abline(slope = 1, intercept = 0, linewidth = .5, colour = "blue4") +
+  scale_color_brewer(palette = "Set1", name = NULL) +
+  labs(
+    title = "Predicted vs Observed Scrum/Maul Involvements",
+    x = "Observed Scrum/Maul Involvements",
+    y = "Predicted Scrum/Maul Involvements"
+  ) +
+  theme_bw(base_size = 14)
+
+
+# ------------------------------------------------------------------
+# Combine all 4 plots into a 2x2 grid
+# ------------------------------------------------------------------
+
+combined_count_pvo <- ggpubr::ggarrange(accel_pvo, contacts_pvo, breakdown_pvo, scrummaul_pvo,
+                   common.legend = TRUE,
+                   legend = "right",
+                    ncol = 2, nrow = 2,
+                   align = "hv")
+# ------------------------------------------------------------------
+# Save as one figure
+# ------------------------------------------------------------------
+
+ggsave(
+  "figs/predicted_vs_observed_count_combined.tiff",
+  plot = combined_count_pvo,
+  width = 14, height = 10, units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+```
+
+### Emmeans Prediction
+
+```{r}
+#| label: Contacts
+
+emm_contacts <- emmeans(
+ model_contacts_02, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "contacts", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)),
+ type = "response"
+) |> 
+  as_tibble() |> 
+  mutate(
+    prob = pmax(prob, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    Contacts_emmean     = prob,
+    Contacts_lower_HPD  = lower.HPD,
+    Contacts_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+ emm_contacts_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_contacts,
+    aes(x = duration_mins, ymin = Contacts_lower_HPD, ymax = Contacts_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_contacts,
+    aes(x = duration_mins, y = Contacts_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = contacts, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) +
+  
+  labs(
+  title = "Estimated Contact Events by Match Duration and Position",
+    x = "Duration (min)",
+    y = "Contact Events",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/contacts_by_duration_position.png", plot = emm_contacts_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: Total breakdowns
+
+emm_breakdowns <- emmeans(
+ model_contacts_02, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "totalbreakdowns", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)),
+ type = "response"
+) |> 
+  as_tibble() |> 
+  mutate(
+    prob = pmax(prob, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    Breakdowns_emmean     = prob,
+    Breakdowns_lower_HPD  = lower.HPD,
+    Breakdowns_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+emm_breakdowns_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_breakdowns,
+    aes(x = duration_mins, ymin = Breakdowns_lower_HPD, ymax = Breakdowns_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_breakdowns,
+    aes(x = duration_mins, y = Breakdowns_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = total_breakdowns, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) +
+  
+  labs(
+  title = "Estimated Total Breakdowns by Match Duration and Position",
+    x = "Duration (min)",
+    y = "Total Breakdowns",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/breakdowns_by_duration_position.png", plot = emm_breakdowns_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: Scrums and Mauls
+
+emm_scrummaul <- emmeans(
+ model_contacts_02, 
+  specs = ~ duration_mins * position_5, 
+  re.form = NA,
+  resp = "scrummaul", 
+  at = list(
+    duration_mins = seq(10, 90, by = 10)),
+ type = "response"
+) |> 
+  as_tibble() |> 
+  mutate(
+    prob = pmax(prob, 0),
+    lower.HPD = pmax(lower.HPD, 0),
+    upper.HPD = pmax(upper.HPD, 0)
+  ) |> 
+  rename(
+    Scrummaul_emmean     = prob,
+    Scrummaul_lower_HPD  = lower.HPD,
+    Scrummaul_upper_HPD  = upper.HPD
+  ) |> 
+  select(position_5, duration_mins, everything()) |> 
+  arrange(factor(position_5, levels = pos_order))
+
+emm_scrummaul_plot <- ggplot() +
+  
+  geom_ribbon(
+    data = emm_scrummaul,
+    aes(x = duration_mins, ymin = Scrummaul_lower_HPD, ymax = Scrummaul_upper_HPD ,fill = position_5),
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = emm_scrummaul,
+    aes(x = duration_mins, y = Scrummaul_emmean, colour = position_5)
+  ) +
+  
+  geom_point(
+    data = gps_matchplay_1,
+    aes(x = duration_mins, y = scrum_maul, colour = position_5)
+  ) + 
+  
+  facet_wrap( ~ position_5) +
+  
+  labs(
+  title = "Estimated ScrumMauls Involvement by Match Duration and Position",
+    x = "Duration (min)",
+    y = "ScrumMauls Involvement",
+    fill = "Position",
+    colour = "Position"
+  ) +
+  theme_bw()  # White background
+
+# Save the plot
+ggsave("figs/scrummaul_by_duration_position.png", plot = emm_scrummaul_plot, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: Join and export emm
+
+emm_combined <- emm_td |>
+  left_join(emm_accelload,by = c("position_5","duration_mins")) |>
+  left_join(emm_hsr,  by = c("position_5","duration_mins")) |>
+  left_join(emm_hmld, by = c("position_5","duration_mins")) |>
+  mutate(across(-c(position_5, duration_mins), ~round(.x, 0)))
+
+
+emm_count_combined <- emm_accels |>
+  left_join(emm_contacts,by = c("position_5","duration_mins")) |>
+  left_join(emm_breakdowns,  by = c("position_5","duration_mins")) |>
+  left_join(emm_scrummaul, by = c("position_5","duration_mins")) |>
+  mutate(across(-c(position_5, duration_mins), ~round(.x, 1)))
+
+
+write_csv(emm_combined, "out/emm_continuous_combined.csv")
+write_csv(emm_count_combined, "out/emm_count_combined.csv")
+```
+
+## BIP Models
+
+```{r}
+#| label: Select variables
+gps_matchplay_bip <- gps_matchplay_bip |> 
+  mutate(
+    duration_secs = as.numeric(total_duration),
+    duration_mins = duration_secs / 60,
+    wr_ratio = bop_sec / bip_sec,
+    team_id = as.factor(team_id),
+    position_5 = as.factor(position_5),
+    contacts = (tackle + ball_carry + attacker + collision),
+    scrum_maul = (total_scrums + maul)
+  ) |> 
+  select(id,
+         period_name,
+         period_tags, 
+         fixture_id,
+         rd,
+         turnaround,
+         half,
+         start_time,
+         bip_bin,
+         bip_sec,
+         bop_sec,
+         wr_ratio,
+         team_id,
+         position_5,
+         duration_mins,
+         total_distance, 
+         hsr_distance_5m_s,
+         hmld_gen_2,
+         total_acceleration_load,
+         accelerations_total_number,
+         tackle,
+         ball_carry,
+         attacker,
+         collision,
+         contacts,
+         total_breakdowns,
+         maul,
+         total_scrums,
+         scrum_maul)
+
+```
+
+```{r}
+#| label: Models - Continous metrics
+
+# td_1 <- bf(total_distance ~ duration_mins * position_5 + turnaround + wr_ratio + (1 |ID1| id),
+#          family = gaussian ())
+# hmld_1 <- bf(hmld_gen_2 ~ duration_mins * position_5 + turnaround + wr_ratio + (1 |ID2| id),
+#          family = gaussian ())
+# hsr_1 <- bf(hsr_distance_5m_s ~ duration_mins * position_5 + turnaround + wr_ratio + (1 |ID2| id),
+#          family = gaussian ())
+# al_1 <- bf(total_acceleration_load ~ duration_mins * position_5 + turnaround + wr_ratio + (1 |ID1| id),
+#          family = gaussian ())
+# 
+# 
+# model_bip_run_02 <- brm(
+#   td_1 + hmld_1 + hsr_1 + al_1,
+#   data = gps_matchplay_bip,
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control = list(
+#     adapt_delta = 0.999,
+#     max_treedepth = 15
+#   ),
+#   save_pars = save_pars(all = TRUE)
+# )
+
+# saveRDS(model_bip_run_00, file = "models/model_bip_run_00.rds")
+ model_bip_run_00 <- read_rds("models/model_bip_run_00.rds")
+# summary(model_bip_run_00)
+
+# saveRDS(model_bip_run_01, file = "models/model_bip_run_01.rds")
+model_bip_run_01 <- read_rds("models/model_bip_run_01.rds")
+# summary(model_bip_run_01)
+
+# saveRDS(model_bip_run_02, file = "models/model_bip_run_02.rds")
+model_bip_run_02 <- read_rds("models/model_bip_run_02.rds")
+ summary(model_bip_run_02)
+ 
+ bayes_R2(model_bip_run_02)
+```
+
+```{r}
+#| label: Models - countact metrics
+
+# contact_1 <- bf(contacts ~ duration_mins * position_5 + turnaround + (1 | id),
+#          family = negbinomial ())
+# 
+# tb_1 <- bf(total_breakdowns ~ duration_mins * position_5 + turnaround + (1 | id),
+#          family = negbinomial ())
+# 
+# sm_1 <- bf(scrum_maul ~ duration_mins * position_5 + turnaround + (1 | id),
+#            family = zero_inflated_negbinomial ())
+# 
+# 
+# model_bip_contacts_00 <- brm(
+#   contact_1 + tb_1 + sm_1,
+#   data = gps_matchplay_bip,
+#   seed = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000,
+#   control = list(
+#     adapt_delta = 0.999,
+#     max_treedepth = 15
+#   ),
+#   save_pars = save_pars(all = TRUE)
+# )
+
+
+# saveRDS(model_bip_contacts_00, file = "models/model_bip_contacts_00.rds")
+ model_bip_contacts_00 <- read_rds("models/model_bip_contacts_00.rds")
+ bayes_R2(model_bip_contacts_00)
+```
+
+```{r}
+#| label: Models - Accels
+# model_bip_accels_04 <- brm(
+#   accelerations_total_number ~ duration_mins * position_5 + turnaround + wr_ratio + (1 | id),
+#   data    = gps_matchplay_bip,
+#   family  = poisson (),
+#   seed    = 1,
+#   chains = 4,
+#   iter = 4000,
+#   warmup = 1000
+#     )
+
+bayes_R2(model_bip_accels_00)
+bayes_R2(model_bip_accels_02)
+bayes_R2(model_bip_accels_03)
+
+
+
+
+# saveRDS(model_bip_accels_00, file = "models/model_bip_accels_00.rds")
+model_bip_accels_00 <- read_rds("models/model_bip_accels_00.rds")
+ 
+# saveRDS(model_bip_accels_02, file = "models/model_bip_accels_02.rds")
+model_bip_accels_02 <- read_rds("models/model_bip_accels_02.rds")
+
+# saveRDS(model_bip_accels_03, file = "models/model_bip_accels_03.rds")
+model_bip_accels_03 <- read_rds("models/model_bip_accels_03.rds")
+
+# saveRDS(model_bip_accels_04, file = "models/model_bip_accels_04.rds")
+model_bip_accels_04 <- read_rds("models/model_bip_accels_04.rds")
+```
+
+### BIP Data Summary
+
+```{r}
+#| label: Create match summary table
+
+gps_bip <-read_csv("synthetic-data/gps_bip.csv")
+
+# ------------------------------------------------------------------
+# Summarise total BIP and BOP per activity
+# ------------------------------------------------------------------
+gps_bip <- gps_bip |> 
+  janitor::clean_names()
+
+  bin_labels <- gps_bip %>%
+  distinct(bip_bin) %>%
+  arrange(bip_bin) %>%
+  pull(bip_bin)
+  
+
+bip_per_activity <- gps_bip |> 
+  group_by(fixture_id) |> 
+  summarise(total_bip_min = sum(bip_sec, na.rm = TRUE) / 60)
+
+# Remove period last NA BOP period of each half
+bop_valid <- gps_bip |> 
+  filter(!is.na(bop_bin)) |> 
+  ungroup()
+
+bop_per_activity <- bop_valid |> 
+  group_by(fixture_id) |> 
+  summarise(total_bop_min = sum(bop_sec, na.rm = TRUE) / 60)
+
+# ------------------------------------------------------------------
+# Calculate average W:R ratio
+# ------------------------------------------------------------------
+mean_wr_ratio <- mean(bop_per_activity$total_bop_min, na.rm = TRUE) / 
+                 mean(bip_per_activity$total_bip_min, na.rm = TRUE)
+
+mean_wr <- paste0("1:", round(mean_wr_ratio, 2))
+
+# ------------------------------------------------------------------
+# Final summary table
+# ------------------------------------------------------------------
+match_summary <- tibble(
+  avg_total_bip_min = round(mean(bip_per_activity$total_bip_min, na.rm = TRUE),1),
+   sd_total_bip_min  = round(sd(bip_per_activity$total_bip_min,  na.rm = TRUE), 1),
+  avg_total_bop_min = round(mean(bop_per_activity$total_bop_min, na.rm = TRUE),1),
+    sd_total_bop_min  = round(sd(bop_per_activity$total_bop_min,  na.rm = TRUE), 1),
+  longest_bip       = round(max(gps_bip$bip_sec, na.rm = TRUE),1),
+  longest_bop       = round(max(bop_valid$bop_sec, na.rm = TRUE),1),
+  avg_bip_period    = round(mean(gps_bip$bip_sec, na.rm = TRUE),1),
+  sd_bip_period     = round(stats::sd(gps_bip$bip_sec,  na.rm = TRUE), 1),
+  avg_bop_period    = round(mean(bop_valid$bop_sec, na.rm = TRUE),1),
+  sd_bop_period     = round(stats::sd(bop_valid$bop_sec,  na.rm = TRUE), 1),
+  mean_wr           = mean_wr
+)
+
+write_csv(match_summary, "out/match_summary_wr.csv")
+
+```
+
+```{r}
+#| label: BIP summary
+
+summary_bip <- gps_bip |> 
+  filter(!is.na(bip_bin)) |> 
+  count(fixture_id, half, bip_bin) |> 
+  group_by(fixture_id, half) |> 
+  mutate(
+    bin_type = "bip"
+  ) |> 
+  ungroup() 
+
+summary_bip_half <- summary_bip |> 
+  complete(fixture_id, half, bip_bin = bin_labels, fill = list(n = 0)) |> 
+  fill(bin_type, .direction = "downup") |> 
+  group_by(half, bip_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  group_by(half) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) |> 
+  ungroup() |> 
+  rename(period_name = half)
+
+
+summary_bip_total <- summary_bip |> 
+  complete(fixture_id, bip_bin = bin_labels, fill = list(n = 0, pct = 0)) |> 
+  group_by(fixture_id, bip_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    n = sum(n, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  mutate(period_name = "Match Total") |> 
+  group_by(period_name, bip_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) |> 
+  fill(bin_type, .direction = "downup")
+
+
+summary_bip_combined <- bind_rows(summary_bip_half, summary_bip_total) |> 
+  mutate(
+    period_name = factor(period_name, levels = c("First Half", "Second Half", "Match Total")),
+    bip_bin = factor(bip_bin, levels = unique(as.character(bin_labels)))
+  ) |> 
+  arrange(period_name, bip_bin) |> 
+   rename(bin = bip_bin)
+
+```
+
+```{r}
+#| label: BOP summary
+
+summary_bop <- bop_valid |> 
+  filter(!is.na(bop_bin)) |> 
+  count(fixture_id, half, bop_bin) |> 
+  group_by(fixture_id, half) |> 
+  mutate(
+    bin_type = "bop"
+  ) |> 
+  ungroup() 
+
+summary_bop_half <- summary_bop |> 
+  complete(fixture_id, half, bop_bin = bin_labels, fill = list(n = 0, pct = 0)) |> 
+  group_by(half, bop_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  group_by(half) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) |> 
+  ungroup() |> 
+  rename(period_name = half) |> 
+  fill(bin_type, .direction = "downup")
+
+
+summary_bop_total <- summary_bop |> 
+  complete(fixture_id, bop_bin = bin_labels, fill = list(n = 0, pct = 0)) |> 
+  group_by(fixture_id, bop_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    n = sum(n, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  mutate(period_name = "Match Total") |> 
+  group_by(period_name, bop_bin) |> 
+  summarise(
+    bin_type = first(bin_type),
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) |> 
+  fill(bin_type, .direction = "downup")
+  
+
+
+summary_bop_combined <- bind_rows(summary_bop_half, summary_bop_total) |> 
+  mutate(
+    period_name = factor(period_name, levels = c("First Half", "Second Half", "Match Total")),
+    bop_bin = factor(bop_bin, levels = unique(as.character(bin_labels)))
+  ) |> 
+  arrange(period_name, bop_bin) |> 
+  rename(bin = bop_bin)
+
+
+```
+
+```{r}
+#| label: Work to Rest Summary
+summary_wr <- gps_bip |> 
+  filter(!is.na(wr_bin)) |> 
+  count(fixture_id, half, wr_bin) |> 
+  group_by(fixture_id, half) |> 
+  mutate(bin_type = "w:r") |> 
+  ungroup()
+
+summary_wr_half <- summary_wr |> 
+  group_by(half, wr_bin) |> 
+ summarise(
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  group_by(half) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) |> 
+  ungroup() |> 
+  rename(period_name = half)
+
+
+summary_wr_total <- summary_wr |>
+  group_by(fixture_id, wr_bin) |>
+  summarise(
+    n = sum(n, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  mutate(period_name = "Match Total") |> 
+  group_by(period_name, wr_bin) |> 
+  summarise(
+    count_avg = round(mean(n, na.rm = TRUE), 1),
+    count_sd = round(sd(n, na.rm = TRUE), 1),
+    count_range = paste0(round(min(n, na.rm = TRUE), 1), "–", round(max(n, na.rm = TRUE), 1)),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    pct = round(count_avg / sum(count_avg) * 100, 1)
+  ) 
+
+
+summary_wr_combined <- bind_rows(summary_wr_half, summary_wr_total) |> 
+  mutate(
+    period_name = factor(period_name, levels = c("First Half", "Second Half", "Match Total"))) |> 
+  arrange(period_name, wr_bin) |> 
+  rename(bin = wr_bin)
+
+
+```
+
+```{r}
+#| label: Data visuals
+
+summary_bip_bop <- bind_rows(summary_bip_combined, summary_bop_combined) |> 
+  mutate(
+    bin = factor(as.character(bin), levels = bin_order),
+    period_name = factor(period_name, levels = c("First Half","Second Half","Match Total")),
+    bin_type = factor(bin_type, levels = c("bip","bop"))
+  )
+
+bip_bop_plot <- ggplot(summary_bip_bop, aes(x = bin, y = fct_rev(factor(period_name)), fill = pct)) +
+  geom_tile(color = "white", width = 0.95, height = 0.95) +
+  geom_text(
+    aes(label = paste0(count_avg, "\n(", pct, "%)")),
+    color = "black", size = 3
+  ) +
+  scale_fill_gradient(low = "#fde0dd", high = "#c51b8a", name = "%") +
+  labs(
+    title = "Mean count and % distribution by Bin Type",
+    x = "Bin (seconds)",
+    y = "Period Breakdown"
+  ) +
+  facet_wrap(~bin_type, ncol = 1, scales = "free_y") +
+  theme_minimal(base_size = 12) + 
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+
+
+wr_plot <- ggplot(summary_wr_combined, aes(x = bin, y = fct_rev(factor(period_name)), fill = pct)) +
+  geom_tile(color = "white", width = 0.95, height = 0.95) +
+  geom_text(
+    aes(label = paste0(count_avg, "\n(", pct, "%)")),
+    color = "black", size = 3
+  ) +
+  scale_fill_gradient(low = "#fde0dd", high = "#c51b8a", name = "%") +
+  labs(
+    title = "Mean count and % distribution by W:R Ratio",
+    x = "W:R Ratio",
+    y = "Period Breakdown"
+  ) + 
+  theme_minimal(base_size = 12) + 
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+
+wr_duration_summary <- gps_bip |> 
+  filter(!is.na(wr_bin)) |> 
+  group_by(fixture_id, wr_bin) |> 
+  summarise(
+    bip_mean_fix = mean(bip_sec, na.rm = TRUE),
+    bop_mean_fix = mean(bop_sec, na.rm = TRUE),
+    n_periods_fix = n(),
+    .groups = "drop"
+  ) |> 
+  group_by(wr_bin) |> 
+  summarise(
+    avg_bip_sec = mean(bip_mean_fix, na.rm = TRUE),
+    avg_bop_sec = mean(bop_mean_fix, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    wr_ratio_avg = round(avg_bop_sec / avg_bip_sec, 2)
+  ) |> 
+  
+  pivot_longer(cols = c(avg_bip_sec, avg_bop_sec), names_to = "Metric", values_to = "Duration") |> 
+  mutate(
+    Metric = recode(Metric, avg_bip_sec = "BIP", avg_bop_sec = "BOP"),
+    wr_bin = fct_rev(wr_bin)
+  )
+
+wr_barchart <- ggplot(wr_duration_summary, aes(x = fct_rev(wr_bin), y = Duration, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c("BIP" = "rosybrown1", "BOP" = "rosybrown3")) +
+  labs(
+    title = "Average BIP and BOP Duration by W:R Ratio Bin",
+    x = "W:R Bin",
+    y = "Average Duration (seconds)",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+ggsave("figs/bip_bop_plot.png", plot = bip_bop_plot, width = 10, height = 6, dpi = 300)
+ggsave("figs/wr_plot.png", plot = wr_plot, width = 10, height = 6, dpi = 300)
+ggsave("figs/wr_barchart.png", plot = wr_barchart, width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: Descriptive statistics
+
+wsd <- function(x, w) {
+  sw <- sum(w, na.rm = TRUE)
+  if (is.na(sw) || sw == 0) return(NA_real_)
+  mu <- weighted.mean(x, w, na.rm = TRUE)
+  num <- sum(w * (x - mu)^2, na.rm = TRUE)
+  den <- sw - sum(w^2, na.rm = TRUE) / sw
+  if (is.na(den) || den <= 0) return(NA_real_)
+  sqrt(num / den)
+}
+
+# --------------------------------------------------------------
+# Ball-in-Play (BiP): per-minute rates + duration-weighted means
+# --------------------------------------------------------------
+
+bip_summary_by_position <- gps_matchplay_bip %>%
+  filter(!is.na(bip_sec), bip_sec > 0, !is.na(bip_bin)) %>%
+  mutate(
+    total_distance_min = total_distance / bip_sec * 60,
+    hsr_min = hsr_distance_5m_s / bip_sec * 60,
+    hmld_min = hmld_gen_2 / bip_sec * 60,
+    accelerations_total_number_min = accelerations_total_number / bip_sec * 60,
+    total_acceleration_load_min = total_acceleration_load / bip_sec * 60,
+    contacts_min = contacts / bip_sec * 60,
+    total_breakdowns_min = total_breakdowns / bip_sec * 60,
+    scrum_maul_min = scrum_maul / bip_sec * 60
+  ) |> 
+  
+  group_by(fixture_id, position_5, bip_bin) |> 
+  summarise(
+    n_bouts      = n(),
+    total_bip_sec  = sum(bip_sec, na.rm = TRUE),
+    avg_bip_secs = mean(bip_sec, na.rm = TRUE),
+    total_distance_min = weighted.mean(total_distance_min, bip_sec, na.rm = TRUE),
+    hsr_min = weighted.mean(hsr_min, bip_sec, na.rm = TRUE),
+    hmld_min = weighted.mean(hmld_min, bip_sec, na.rm = TRUE),
+    accelerations_total_number_min = weighted.mean(accelerations_total_number_min, bip_sec, na.rm = TRUE),
+    total_acceleration_load_min = weighted.mean(total_acceleration_load_min, bip_sec, na.rm = TRUE),
+    contacts_min = weighted.mean(contacts_min, bip_sec, na.rm = TRUE),
+    total_breakdowns_min = weighted.mean(total_breakdowns_min, bip_sec, na.rm = TRUE),
+    scrum_maul_min = weighted.mean(scrum_maul_min, bip_sec, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  group_by(position_5, bip_bin) |> 
+  summarise(
+     avg_bip_secs_sd                   = wsd(avg_bip_secs,                total_bip_sec),
+  total_distance_min_sd             = wsd(total_distance_min,          total_bip_sec),
+  hsr_min_sd                        = wsd(hsr_min,                     total_bip_sec),
+  hmld_min_sd                       = wsd(hmld_min,                    total_bip_sec),
+  accelerations_total_number_min_sd = wsd(accelerations_total_number_min, total_bip_sec),
+  total_acceleration_load_min_sd    = wsd(total_acceleration_load_min, total_bip_sec),
+  contacts_min_sd                   = wsd(contacts_min,                total_bip_sec),
+  total_breakdowns_min_sd           = wsd(total_breakdowns_min,        total_bip_sec),
+  scrum_maul_min_sd                 = wsd(scrum_maul_min,              total_bip_sec),
+    avg_bip_secs = weighted.mean(avg_bip_secs,total_bip_sec, na.rm = TRUE),
+    total_distance_min  = weighted.mean(total_distance_min, total_bip_sec, na.rm = TRUE),
+    hsr_min= weighted.mean(hsr_min, total_bip_sec, na.rm = TRUE),
+    hmld_min = weighted.mean(hmld_min, total_bip_sec, na.rm = TRUE),
+    accelerations_total_number_min = weighted.mean(accelerations_total_number_min, total_bip_sec, na.rm = TRUE),
+    total_acceleration_load_min = weighted.mean(total_acceleration_load_min, total_bip_sec, na.rm = TRUE),
+    contacts_min = weighted.mean(contacts_min, total_bip_sec, na.rm = TRUE),
+    total_breakdowns_min = weighted.mean(total_breakdowns_min, total_bip_sec, na.rm = TRUE),
+    scrum_maul_min = weighted.mean(scrum_maul_min, total_bip_sec, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  
+  mutate(
+    across(
+      c(total_distance_min, hsr_min, hmld_min,
+        accelerations_total_number_min, total_acceleration_load_min,
+        contacts_min, total_breakdowns_min, scrum_maul_min,
+        avg_bip_secs),
+      ~ round(.x, 1)
+    )
+  ) |> 
+mutate(across(ends_with("_sd"), ~ round(coalesce(.x, 0), 1))) |>
+  arrange(factor(position_5, levels = pos_order),
+          factor(bip_bin, levels = bin_order)) 
+
+
+write_csv(bip_summary_by_position, "out/bip_summary_by_position.csv")
+
+```
